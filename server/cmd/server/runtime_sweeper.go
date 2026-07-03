@@ -268,8 +268,12 @@ func sweepStaleTasks(ctx context.Context, queries *db.Queries, taskSvc *service.
 // a task is already queued. Capped to queuedExpireBatchSize per tick so a
 // big backlog can't monopolise the DB.
 func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) {
+	// TTL is env-tunable (MULTICA_QUEUED_TASK_TTL, e.g. "8h") so a large wave
+	// queued behind a single serial runtime isn't falsely expired. Default
+	// stays at queuedTTLSeconds (2h) when the env var is unset/invalid.
+	ttlSecs := envDurationPositive("MULTICA_QUEUED_TASK_TTL", time.Duration(queuedTTLSeconds)*time.Second).Seconds()
 	failedTasks, err := queries.ExpireStaleQueuedTasks(ctx, db.ExpireStaleQueuedTasksParams{
-		TtlSecs:    queuedTTLSeconds,
+		TtlSecs:    ttlSecs,
 		MaxPerTick: queuedExpireBatchSize,
 	})
 	if err != nil {
