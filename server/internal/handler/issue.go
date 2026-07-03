@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/go-chi/chi/v5"
@@ -836,6 +837,21 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		scheduledFilter = pgtype.Bool{Bool: true, Valid: true}
 	}
 
+	// updated_since restricts the result to issues modified at or after the
+	// given RFC3339 timestamp. Enables an incremental "changed since last tick"
+	// poll (e.g. the multica-sync reconciler) — without it a poller must page
+	// the entire workspace every tick and silently misses recent issues past
+	// the 100-row limit cap.
+	var updatedSinceFilter pgtype.Timestamptz
+	if u := r.URL.Query().Get("updated_since"); u != "" {
+		t, err := time.Parse(time.RFC3339, u)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid updated_since value")
+			return
+		}
+		updatedSinceFilter = pgtype.Timestamptz{Time: t, Valid: true}
+	}
+
 	// Parse sort and direction params for dynamic ORDER BY.
 	// Manual sort (position) is always ASC — direction is ignored because
 	// the user defines order through drag-and-drop, reversing it has no
@@ -843,7 +859,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	sortCol := "position"
 	if s := r.URL.Query().Get("sort"); s != "" {
 		switch s {
-		case "position", "title", "created_at", "start_date", "due_date":
+		case "position", "title", "created_at", "updated_at", "start_date", "due_date":
 			sortCol = s
 		case "priority":
 			sortCol = "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
@@ -892,6 +908,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if projectFilter.Valid {
 		where = append(where, fmt.Sprintf("i.project_id = %s::uuid", addArg(projectFilter)))
+	}
+	if updatedSinceFilter.Valid {
+		where = append(where, fmt.Sprintf("i.updated_at >= %s", addArg(updatedSinceFilter)))
 	}
 	if scheduledFilter.Valid {
 		where = append(where, "(i.start_date IS NOT NULL OR i.due_date IS NOT NULL)")
